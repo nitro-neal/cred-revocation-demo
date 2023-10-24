@@ -1,43 +1,87 @@
-import web5.credentials.CreateVcOptions
-import web5.credentials.DIDKey
-import web5.credentials.SignOptions
-import web5.credentials.VcJwt
-import web5.credentials.VerifiableCredential
-import web5.credentials.model.CredentialSubject
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import io.ktor.http.*
+import io.ktor.server.application.*
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.*
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import io.ktor.serialization.jackson.jackson
 import java.net.URI
+import web5.sdk.credentials.StatusList2021Entry
+import web5.sdk.credentials.StatusListCredential
+import web5.sdk.credentials.StatusPurpose
+import web5.sdk.credentials.VerifiableCredential
+import web5.sdk.crypto.InMemoryKeyManager
+import web5.sdk.dids.DidKey
+data class StreetCredibility(val localRespect: String, val legit: Boolean)
+
+val keyManager = InMemoryKeyManager()
+val issuerDid = DidKey.create(keyManager)
+val holderDid = DidKey.create(keyManager)
 
 fun main(args: Array<String>) {
-    val (privateJWK, did, document) = DIDKey.generateEd25519()
+    println("Starting Status List Credential Flow Run..")
 
-    val claims: MutableMap<String, Any> = LinkedHashMap()
-    val degree: MutableMap<String, Any> = LinkedHashMap()
-    degree["name"] = "Bachelor of Science and Arts"
-    degree["type"] = "BachelorDegree"
-    claims["college"] = "Test University"
-    claims["degree"] = degree
-
-    val credentialSubject = CredentialSubject.builder()
-        .id(URI.create(did))
-        .claims(claims)
+    val credentialStatus1 = StatusList2021Entry.builder()
+        .id(URI.create("cred-with-status-id"))
+        .statusPurpose("revocation")
+        .statusListIndex("123")
+        .statusListCredential(URI.create("http://localhost:1234"))
         .build()
 
-    val signOptions = SignOptions(
-        kid = "#" + did.split(":")[2],
-        issuerDid = did,
-        subjectDid = did,
-        signerPrivateKey = privateJWK
+    val credWithCredStatus1 = VerifiableCredential.create(
+        type = "StreetCred",
+        issuer = issuerDid.uri,
+        subject = holderDid.uri,
+        data = StreetCredibility(localRespect = "high", legit = true),
+        credentialStatus = credentialStatus1
     )
 
-    val vcCreateOptions = CreateVcOptions(
-        credentialSubject = credentialSubject,
-        issuer = did,
-        expirationDate = null,
-        credentialStatus = null
+    val statusListCredential1 = StatusListCredential.create(
+        "http://localhost:1234",
+        issuerDid.uri,
+        StatusPurpose.REVOCATION,
+        listOf(credWithCredStatus1))
+
+    val signedStatusListCredential = statusListCredential1.sign(issuerDid)
+
+    // Host status list credential
+    hostStatusListCred(signedStatusListCredential)
+
+    val revoked = StatusListCredential.validateCredentialInStatusList(credWithCredStatus1)
+    require(revoked == true)
+
+    val credentialStatus2 = StatusList2021Entry.builder()
+        .id(URI.create("cred-with-status-id"))
+        .statusPurpose("revocation")
+        .statusListIndex("124")
+        .statusListCredential(URI.create("http://localhost:1234"))
+        .build()
+
+    val credWithCredStatus2 = VerifiableCredential.create(
+        type = "StreetCred",
+        issuer = issuerDid.uri,
+        subject = holderDid.uri,
+        data = StreetCredibility(localRespect = "high", legit = true),
+        credentialStatus = credentialStatus2
     )
 
-    val vcJwt: VcJwt = VerifiableCredential.create(signOptions, vcCreateOptions, null)
+    val revoked2 = StatusListCredential.validateCredentialInStatusList(credWithCredStatus2)
+    require(revoked2 == false)
 
-    // Try adding program arguments via Run/Debug configuration.
-    // Learn more about running applications: https://www.jetbrains.com/help/idea/running-applications.html.
-    println("Created VC: $vcJwt")
+    println("Status List Credential Flow Ran Successfully!")
+}
+fun hostStatusListCred(vcJwt: String) {
+    embeddedServer(Netty, port = 1234) {
+        install(ContentNegotiation) {
+            jackson { jacksonObjectMapper() }
+        }
+
+        routing {
+            get("/") {
+                call.respond(HttpStatusCode.OK, vcJwt)
+            }
+        }
+    }.start(wait = false)
 }
